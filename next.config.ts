@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: false,
+
   webpack: (config) => {
     config.externals = config.externals || [];
     config.externals.push("@prisma/client");
@@ -16,14 +17,14 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+
   eslint: {
     ignoreDuringBuilds: true,
   },
+
   typescript: {
     ignoreBuildErrors: true,
   },
 };
-
-module.exports = nextConfig;
 
 export default nextConfig;
