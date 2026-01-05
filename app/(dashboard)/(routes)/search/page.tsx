@@ -1,6 +1,3 @@
-export const dynamic = "force-dynamic";
-
-import { Suspense } from "react";
 import { db } from "@/lib/db";
 import { Categories } from "./_components/categories";
 import { SearchInput } from "@/components/search-input";
@@ -10,7 +7,7 @@ import { redirect } from "next/navigation";
 import { CoursesList } from "@/components/courses-list";
 
 interface SearchPageProps {
-  searchParams: Promise<{
+  searchParams?: Promise<{
     title?: string;
     categoryId?: string;
   }>;
@@ -20,21 +17,25 @@ const SearchPage = async ({ searchParams }: SearchPageProps) => {
   const resolvedSearchParams = await searchParams;
 
   const { userId } = await auth();
+
   if (!userId) {
-    return redirect("/");
+    redirect("/");
   }
 
   const categories = await db.category.findMany({
-    orderBy: { name: "asc" },
+    orderBy: {
+      name: "asc",
+    },
   });
 
   const courses = await getCourses({
     userId,
-    ...resolvedSearchParams,
+    title: resolvedSearchParams?.title,
+    categoryId: resolvedSearchParams?.categoryId,
   });
 
   return (
-    <Suspense fallback={<div className="p-6">Loading search…</div>}>
+    <>
       <div className="px-6 pt-6 md:hidden block">
         <SearchInput />
       </div>
@@ -43,7 +44,7 @@ const SearchPage = async ({ searchParams }: SearchPageProps) => {
         <Categories items={categories} />
         <CoursesList items={courses} />
       </div>
-    </Suspense>
+    </>
   );
 };
 
