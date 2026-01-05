@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { db } from "@/lib/db";
 import { Categories } from "./_components/categories";
 import { SearchInput } from "@/components/search-input";
@@ -15,7 +16,6 @@ interface SearchPageProps {
 
 const SearchPage = async ({ searchParams }: SearchPageProps) => {
   const resolvedSearchParams = await searchParams;
-
   const { userId } = await auth();
 
   if (!userId) {
@@ -23,9 +23,7 @@ const SearchPage = async ({ searchParams }: SearchPageProps) => {
   }
 
   const categories = await db.category.findMany({
-    orderBy: {
-      name: "asc",
-    },
+    orderBy: { name: "asc" },
   });
 
   const courses = await getCourses({
@@ -37,12 +35,16 @@ const SearchPage = async ({ searchParams }: SearchPageProps) => {
   return (
     <>
       <div className="px-6 pt-6 md:hidden block">
-        <SearchInput />
+        <Suspense fallback={null}>
+          <SearchInput />
+        </Suspense>
       </div>
 
       <div className="p-6 space-y-4">
         <Categories items={categories} />
-        <CoursesList items={courses} />
+        <Suspense fallback={<div>Loading courses…</div>}>
+          <CoursesList items={courses} />
+        </Suspense>
       </div>
     </>
   );
