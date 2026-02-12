@@ -133,3 +133,32 @@ model StripeCustomer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+model AiChatThread {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId        String   @db.String
+  courseId      String   @db.ObjectId
+  chapterId     String   @db.ObjectId
+
+  
+  lessonSummary String?  @db.String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  messages      AiChatMessage[]
+
+  @@unique([userId, chapterId])
+  @@index([courseId, chapterId])
+}
+
+model AiChatMessage {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  threadId  String   @db.ObjectId
+  role      String   @db.String
+  content   String   @db.String
+  createdAt DateTime @default(now())
+
+  thread    AiChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, createdAt])
+}

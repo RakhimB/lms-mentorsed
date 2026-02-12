@@ -30,33 +30,39 @@ export function AiChat({
   const [loading, setLoading] = React.useState(false);
   const listRef = React.useRef<HTMLDivElement | null>(null);
 
+  
   React.useEffect(() => {
-    listRef.current?.scrollTo({
-      top: listRef.current.scrollHeight,
-      behavior: "smooth",
-    });
-  }, [messages, loading]);
+    const load = async () => {
+      try {
+        const res = await axios.get("/api/ai/chat", {
+          params: { courseId, chapterId },
+        });
+
+        if (Array.isArray(res.data?.messages) && res.data.messages.length > 0) {
+          setMessages(res.data.messages);
+        }
+      } catch (e: any) {
+        // ignore silently (e.g., not purchased yet)
+      }
+    };
+    load();
+  }, [courseId, chapterId]);
 
   const send = async () => {
     const trimmed = input.trim();
     if (!trimmed || loading) return;
 
-    const nextMessages: ChatMessage[] = [
-      ...messages,
-      { role: "user", content: trimmed },
-    ];
-    setMessages(nextMessages);
     setInput("");
     setLoading(true);
 
-    try {
-      // Keep context small (last 12 messages is usually enough)
-      const context = nextMessages.slice(-12);
+    // Optimistic UI
+    setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
 
+    try {
       const res = await axios.post("/api/ai/chat", {
         courseId,
         chapterId,
-        messages: context,
+        message: trimmed,
       });
 
       setMessages((prev) => [
@@ -77,6 +83,7 @@ export function AiChat({
       setLoading(false);
     }
   };
+
 
   return (
     <Card className="mt-6 p-4">
