@@ -8,6 +8,8 @@ import { Separator } from "@/components/ui/separator";
 import { Preview } from "@/components/preview";
 import { File } from "lucide-react";
 import { CourseProgressButton } from "./_components/course-progress-button";
+import { AiChat } from "./_components/ai-chat";
+
 
 const ChapterIdPage = async ({
   params,
@@ -69,41 +71,57 @@ const ChapterIdPage = async ({
           <div className="p-4 flex flex-col md:flex-row items-center justify-between">
             <h2 className="text-2xl font-semibold mb-2">{chapter.title}</h2>
             {purchase ? (
-                <CourseProgressButton
+              <CourseProgressButton
                 chapterId={chapterId}
                 courseId={courseId}
                 nextChapterId={nextChapter?.id || ""}
                 isCompleted={!!userProgress?.isCompleted}
-                />
+              />
             ) : (
               <CourseEnrollButton courseId={courseId} price={course.price!} />
             )}
           </div>
-          <Separator/>
+          <Separator />
           <div>
             <Preview value={chapter.description!} />
           </div>
-          {!!attachments.length && (
-            <> 
-            <Separator/>
+
+          {/* AI Chat (purchase-gated) */}
+          {purchase ? (
+            <AiChat
+              courseId={courseId}
+              chapterId={chapterId}
+              chapterTitle={chapter.title}
+            />
+          ) : (
             <div className="p-4">
-                {attachments.map((attachment)=>(
-                    <a
+              <div className="rounded-md border bg-slate-50 p-4">
+                <p className="text-sm text-slate-700">
+                  AI Tutor is available after purchasing the course.
+                </p>
+              </div>
+            </div>
+          )}
+          
+          {!!attachments.length && (
+            <>
+              <Separator />
+              <div className="p-4">
+                {attachments.map((attachment) => (
+                  <a
                     href={attachment.url}
                     target="_blank"
                     key={attachment.id}
-                    className="flex items-center p-3 w-full bg-sky-200 border text-sky-700 rounded-md hover:underline">
+                    className="flex items-center p-3 w-full bg-sky-200 border text-sky-700 rounded-md hover:underline"
+                  >
                     <File />
-                    <p className="line-clamp-1">
-                        {attachment.name}
-                    </p>
-                    </a>
+                    <p className="line-clamp-1">{attachment.name}</p>
+                  </a>
                 ))}
-            </div>
+              </div>
             </>
-            )}
+          )}
         </div>
-
       </div>
     </div>
   );
