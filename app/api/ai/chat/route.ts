@@ -5,11 +5,16 @@ import OpenAI from "openai";
 import { db } from "@/lib/db";
 import { getMuxTranscriptText } from "@/lib/mux-transcript";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+function getOpenAIClient() {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    // Return a controlled error at runtime (not build-time)
+    throw new Error("OPENAI_API_KEY_MISSING");
+  }
+  return new OpenAI({ apiKey });
+}
 
-const CHEAP_MODEL = "gpt-4o-mini"; // best default for low balance (fast + low cost)
+const CHEAP_MODEL = "gpt-4o-mini";
 
 function systemPrompt({
   courseTitle,
@@ -96,7 +101,7 @@ async function buildLessonSummary({
   }
 
   // One-time cheap summarization to reduce future token usage
-  const resp = await openai.responses.create({
+  const resp = await getOpenAIClient().responses.create({
     model: CHEAP_MODEL,
     input: [
       {
@@ -123,7 +128,7 @@ async function buildLessonSummary({
   return summary;
 }
 
-// GET returns persisted history for (courseId, chapterId)
+
 export async function GET(req: Request) {
   try {
     const { userId } = await auth();
@@ -140,7 +145,6 @@ export async function GET(req: Request) {
       );
     }
 
-    // Optional: you can enforce purchase even for reading history
     await ensurePurchaseOrThrow(userId, courseId);
 
     const thread = await db.aiChatThread.findUnique({
@@ -165,7 +169,7 @@ export async function GET(req: Request) {
   }
 }
 
-// POST stores user message -> calls OpenAI -> stores assistant message -> returns reply
+
 export async function POST(req: Request) {
   try {
     const { userId } = await auth();
@@ -176,6 +180,8 @@ export async function POST(req: Request) {
     const courseId: string | undefined = body?.courseId;
     const chapterId: string | undefined = body?.chapterId;
     const userMessage: string | undefined = body?.message;
+    const openai = getOpenAIClient();
+
 
     if (!courseId || !chapterId || !userMessage?.trim()) {
       return NextResponse.json(
@@ -184,7 +190,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // ✅ Real server-side enforcement
     await ensurePurchaseOrThrow(userId, courseId);
 
     const { chapter, course } = await db.course
@@ -263,8 +268,11 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ reply });
   } catch (e: any) {
-    if (e?.message === "NOT_PURCHASED") {
-      return NextResponse.json({ error: "Purchase required" }, { status: 403 });
+    if (e?.message === "OPENAI_API_KEY_MISSING") {
+      return NextResponse.json(
+        { error: "Server misconfigured: OPENAI_API_KEY is missing" },
+        { status: 500 }
+      );
     }
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
