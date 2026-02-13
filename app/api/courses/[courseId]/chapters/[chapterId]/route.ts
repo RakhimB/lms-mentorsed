@@ -147,10 +147,13 @@ export async function PATCH(
       }
 
       const asset = await video.assets.create({
-        input: values.videoUrl,
+        inputs: [
+          {
+            url: values.videoUrl,
+            generated_subtitles: [{ language_code: "en", name: "English CC" }],
+          },
+        ],
         playback_policies: ["public"],
-        test: false,
-        inputs: [],
       });
 
       await db.muxData.create({

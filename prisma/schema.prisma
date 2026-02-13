@@ -69,6 +69,9 @@ model Chapter {
   isPublished Boolean @default(false)
   isFree    Boolean @default(false)
 
+  aiLessonSummary           String?  @db.String
+  aiLessonSummarySourceHash String?  @db.String
+  aiLessonSummaryUpdatedAt  DateTime?
 
   muxData MuxData?
 
@@ -140,8 +143,7 @@ model AiChatThread {
   courseId      String   @db.ObjectId
   chapterId     String   @db.ObjectId
 
-  
-  lessonSummary String?  @db.String
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 

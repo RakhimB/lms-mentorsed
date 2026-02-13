@@ -1,16 +1,12 @@
-// app/api/ai/chat/route.ts
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import OpenAI from "openai";
 import { db } from "@/lib/db";
-import { getMuxTranscriptText } from "@/lib/mux-transcript";
+import { getOrBuildChapterLessonSummary } from "@/lib/chapter-lesson-summary";
 
 function getOpenAIClient() {
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    // Return a controlled error at runtime (not build-time)
-    throw new Error("OPENAI_API_KEY_MISSING");
-  }
+  if (!apiKey) throw new Error("OPENAI_API_KEY_MISSING");
   return new OpenAI({ apiKey });
 }
 
@@ -46,9 +42,7 @@ async function ensurePurchaseOrThrow(userId: string, courseId: string) {
   const purchase = await db.purchase.findUnique({
     where: { userId_courseId: { userId, courseId } },
   });
-  if (!purchase) {
-    throw new Error("NOT_PURCHASED");
-  }
+  if (!purchase) throw new Error("NOT_PURCHASED");
 }
 
 async function getOrCreateThread(
@@ -65,69 +59,6 @@ async function getOrCreateThread(
     data: { userId, courseId, chapterId },
   });
 }
-
-async function buildLessonSummary({
-  threadId,
-  courseTitle,
-  chapterTitle,
-  chapterDescription,
-  muxAssetId,
-  muxPlaybackId,
-}: {
-  threadId: string;
-  courseTitle: string;
-  chapterTitle: string;
-  chapterDescription: string | null;
-  muxAssetId: string | null;
-  muxPlaybackId: string | null;
-}): Promise<string> {
-  // First: if description exists, it’s free context (no tokens)
-  const fallback = (chapterDescription ?? "").slice(0, 4000);
-
-  // Try transcript if we have mux IDs
-  let transcript: string | null = null;
-  if (muxAssetId && muxPlaybackId) {
-    transcript = await getMuxTranscriptText({
-      assetId: muxAssetId,
-      playbackId: muxPlaybackId,
-    });
-  }
-
-  const sourceText = transcript?.slice(0, 20_000) || fallback;
-
-  // If nothing, return minimal summary
-  if (!sourceText.trim()) {
-    return `Lesson title: ${chapterTitle}\nNo transcript/description available. Only answer if user refers to the title/topic explicitly.`;
-  }
-
-  // One-time cheap summarization to reduce future token usage
-  const resp = await getOpenAIClient().responses.create({
-    model: CHEAP_MODEL,
-    input: [
-      {
-        role: "system",
-        content:
-          "Summarize lesson content for tutoring. Output bullet points + key terms + 2-3 common misconceptions. Keep under 250 tokens.",
-      },
-      {
-        role: "user",
-        content: `Course: ${courseTitle}\nLesson: ${chapterTitle}\n\nContent:\n${sourceText}`,
-      },
-    ],
-    max_output_tokens: 280,
-  });
-
-  const summary =
-    resp.output_text?.trim() || `Lesson title: ${chapterTitle}\n${fallback}`;
-
-  await db.aiChatThread.update({
-    where: { id: threadId },
-    data: { lessonSummary: summary },
-  });
-
-  return summary;
-}
-
 
 export async function GET(req: Request) {
   try {
@@ -169,7 +100,6 @@ export async function GET(req: Request) {
   }
 }
 
-
 export async function POST(req: Request) {
   try {
     const { userId } = await auth();
@@ -180,8 +110,6 @@ export async function POST(req: Request) {
     const courseId: string | undefined = body?.courseId;
     const chapterId: string | undefined = body?.chapterId;
     const userMessage: string | undefined = body?.message;
-    const openai = getOpenAIClient();
-
 
     if (!courseId || !chapterId || !userMessage?.trim()) {
       return NextResponse.json(
@@ -192,20 +120,17 @@ export async function POST(req: Request) {
 
     await ensurePurchaseOrThrow(userId, courseId);
 
-    const { chapter, course } = await db.course
-      .findUnique({
-        where: { id: courseId },
-        include: {
-          chapters: {
-            where: { id: chapterId },
-            include: { muxData: true },
-          },
+    const course = await db.course.findUnique({
+      where: { id: courseId },
+      include: {
+        chapters: {
+          where: { id: chapterId },
+          include: { muxData: true },
         },
-      })
-      .then((c) => {
-        const chapter = c?.chapters?.[0];
-        return { course: c, chapter };
-      });
+      },
+    });
+
+    const chapter = course?.chapters?.[0];
 
     if (!course || !chapter) {
       return NextResponse.json(
@@ -220,7 +145,7 @@ export async function POST(req: Request) {
       data: { threadId: thread.id, role: "user", content: userMessage.trim() },
     });
 
-    // Load short history window (token control)
+    // short history window
     const recent = await db.aiChatMessage.findMany({
       where: { threadId: thread.id },
       orderBy: { createdAt: "asc" },
@@ -228,17 +153,14 @@ export async function POST(req: Request) {
       select: { role: true, content: true },
     });
 
-    // Cache / compute lesson summary (token optimization)
-    const lessonSummary =
-      thread.lessonSummary ??
-      (await buildLessonSummary({
-        threadId: thread.id,
-        courseTitle: course.title,
-        chapterTitle: chapter.title,
-        chapterDescription: chapter.description,
-        muxAssetId: chapter.muxData?.assetId ?? null,
-        muxPlaybackId: chapter.muxData?.playbackId ?? null,
-      }));
+    // ✅ Chapter-level cached summary (low cost)
+    const lessonSummary = await getOrBuildChapterLessonSummary({
+      courseId,
+      chapterId,
+      preferredLanguage: "en",
+    });
+
+    const openai = getOpenAIClient();
 
     const resp = await openai.responses.create({
       model: CHEAP_MODEL,
@@ -251,12 +173,13 @@ export async function POST(req: Request) {
             lessonSummary,
           }),
         },
-        ...recent.map((m: { role: string; content: string }) => ({
+        ...recent.map((m) => ({
           role: m.role as "user" | "assistant",
           content: m.content,
         })),
       ],
-      max_output_tokens: 350, // hard cap to protect your balance
+      max_output_tokens: 350,
+      temperature: 0.2,
     });
 
     const reply =
@@ -271,8 +194,11 @@ export async function POST(req: Request) {
     if (e?.message === "OPENAI_API_KEY_MISSING") {
       return NextResponse.json(
         { error: "Server misconfigured: OPENAI_API_KEY is missing" },
-        { status: 500 }
+        { status: 500 },
       );
+    }
+    if (e?.message === "NOT_PURCHASED") {
+      return NextResponse.json({ error: "Purchase required" }, { status: 403 });
     }
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
