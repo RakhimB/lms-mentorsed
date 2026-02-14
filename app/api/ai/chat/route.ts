@@ -3,6 +3,7 @@ import { auth } from "@clerk/nextjs/server";
 import OpenAI from "openai";
 import { db } from "@/lib/db";
 import { getOrBuildChapterLessonSummary } from "@/lib/chapter-lesson-summary";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 function getOpenAIClient() {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -11,6 +12,23 @@ function getOpenAIClient() {
 }
 
 const CHEAP_MODEL = "gpt-4o-mini";
+
+function safeParseJson(text: string): any | null {
+  const raw = (text ?? "").trim();
+  if (!raw) return null;
+
+  // strip code fences if model wraps output
+  const cleaned = raw
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+}
 
 function systemPrompt({
   courseTitle,
@@ -30,6 +48,20 @@ SCOPE RULE (strict):
 
 LESSON CONTEXT (trusted):
 ${lessonSummary}
+
+OUTPUT FORMAT (mandatory):
+- Return ONLY valid JSON (no markdown, no extra text).
+- Schema:
+{
+  "answer": string,
+  "suggestions": [
+    { "label": string, "question": string }
+  ]
+}
+- "answer" must be well-formatted using plain text + simple markdown (bullets, numbered steps, **bold**, \`inline code\`, and fenced code blocks when needed).
+- "suggestions" must be strictly related to this lesson and useful follow-ups derived from the user's question + your answer.
+- Provide 3 to 4 suggestions.
+- Keep suggestion "label" short (2–5 words). "question" must be a complete user question.
 
 STYLE:
 - Be concise by default.
@@ -63,12 +95,14 @@ async function getOrCreateThread(
 export async function GET(req: Request) {
   try {
     const { userId } = await auth();
-    if (!userId)
+    if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     const { searchParams } = new URL(req.url);
     const courseId = searchParams.get("courseId");
     const chapterId = searchParams.get("chapterId");
+
     if (!courseId || !chapterId) {
       return NextResponse.json(
         { error: "Missing courseId/chapterId" },
@@ -103,8 +137,9 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const { userId } = await auth();
-    if (!userId)
+    if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     const body = await req.json();
     const courseId: string | undefined = body?.courseId;
@@ -120,19 +155,34 @@ export async function POST(req: Request) {
 
     await ensurePurchaseOrThrow(userId, courseId);
 
-    const course = await db.course.findUnique({
-      where: { id: courseId },
-      include: {
-        chapters: {
-          where: { id: chapterId },
-          include: { muxData: true },
-        },
-      },
+    // Cost control: 20 req/min per user for this endpoint
+    const rl = checkRateLimit({
+      key: `ai-chat:${userId}`,
+      limit: 20,
+      windowMs: 60_000,
     });
 
-    const chapter = course?.chapters?.[0];
+    if (!rl.ok) {
+      return NextResponse.json(
+        { error: "Too many requests. Please slow down." },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(rl.retryAfterSec),
+            "X-RateLimit-Limit": String(rl.limit),
+            "X-RateLimit-Remaining": String(rl.remaining),
+          },
+        },
+      );
+    }
 
-    if (!course || !chapter) {
+    // Fetch minimal chapter info
+    const chapter = await db.chapter.findFirst({
+      where: { id: chapterId, courseId },
+      include: { muxData: true, course: { select: { title: true } } },
+    });
+
+    if (!chapter) {
       return NextResponse.json(
         { error: "Course/Chapter not found" },
         { status: 404 },
@@ -141,19 +191,22 @@ export async function POST(req: Request) {
 
     const thread = await getOrCreateThread(userId, courseId, chapterId);
 
+    // Store user message
     await db.aiChatMessage.create({
       data: { threadId: thread.id, role: "user", content: userMessage.trim() },
     });
 
-    // short history window
-    const recent = await db.aiChatMessage.findMany({
+    // Most recent N messages (DESC), then reverse to chronological for the model
+    const recentDesc = await db.aiChatMessage.findMany({
       where: { threadId: thread.id },
-      orderBy: { createdAt: "asc" },
+      orderBy: { createdAt: "desc" },
       take: 14,
       select: { role: true, content: true },
     });
 
-    // ✅ Chapter-level cached summary (low cost)
+    const recent = recentDesc.reverse();
+
+    // Cached summary (low cost)
     const lessonSummary = await getOrBuildChapterLessonSummary({
       courseId,
       chapterId,
@@ -168,7 +221,7 @@ export async function POST(req: Request) {
         {
           role: "system",
           content: systemPrompt({
-            courseTitle: course.title,
+            courseTitle: chapter.course.title,
             chapterTitle: chapter.title,
             lessonSummary,
           }),
@@ -178,18 +231,42 @@ export async function POST(req: Request) {
           content: m.content,
         })),
       ],
-      max_output_tokens: 350,
+      max_output_tokens: 400, // slightly higher to allow answer + 3-5 suggestions
       temperature: 0.2,
     });
 
-    const reply =
-      resp.output_text?.trim() || "Sorry — I couldn't generate a reply.";
+    const rawText = resp.output_text?.trim() || "";
+    const parsed = safeParseJson(rawText);
 
+    const reply: string =
+      typeof parsed?.answer === "string" && parsed.answer.trim()
+        ? parsed.answer.trim()
+        : rawText || "Sorry — I couldn't generate a reply.";
+
+    const suggestions: Array<{ label: string; question: string }> =
+      Array.isArray(parsed?.suggestions)
+        ? parsed.suggestions
+            .filter(
+              (x: any) =>
+                x &&
+                typeof x.label === "string" &&
+                typeof x.question === "string" &&
+                x.label.trim() &&
+                x.question.trim(),
+            )
+            .slice(0, 5)
+            .map((x: any) => ({
+              label: x.label.trim(),
+              question: x.question.trim(),
+            }))
+        : [];
+
+    // Store assistant reply (only the answer text, not JSON)
     await db.aiChatMessage.create({
       data: { threadId: thread.id, role: "assistant", content: reply },
     });
 
-    return NextResponse.json({ reply });
+    return NextResponse.json({ reply, suggestions });
   } catch (e: any) {
     if (e?.message === "OPENAI_API_KEY_MISSING") {
       return NextResponse.json(

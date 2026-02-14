@@ -5,10 +5,13 @@ import axios from "axios";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { MiniMarkdown } from "@/components/ai/mini-markdown";
 
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
+  suggestions?: Array<{ label: string; question: string }>;
 };
 
 export function AiChat({
@@ -24,13 +27,39 @@ export function AiChat({
     {
       role: "assistant",
       content: `Hi! Ask me anything about “${chapterTitle}”. I’ll explain step-by-step and can give examples.`,
+      suggestions: [
+        {
+          label: "What is this lesson about?",
+          question: `What is this lesson “${chapterTitle}” about? Give me a short overview.`,
+        },
+        {
+          label: "Key concepts",
+          question: `What are the key concepts covered in “${chapterTitle}”?`,
+        },
+        {
+          label: "Explain with examples",
+          question: `Explain the main idea of “${chapterTitle}” with a simple example.`,
+        },
+        {
+          label: "Common mistakes",
+          question: `What common mistakes do learners make in this lesson “${chapterTitle}” and how to avoid them?`,
+        },
+      ],
     },
   ]);
+
   const [input, setInput] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const listRef = React.useRef<HTMLDivElement | null>(null);
 
-  
+  // Auto-scroll to newest message
+  React.useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages, loading]);
+
+  // Load history
   React.useEffect(() => {
     const load = async () => {
       try {
@@ -41,15 +70,15 @@ export function AiChat({
         if (Array.isArray(res.data?.messages) && res.data.messages.length > 0) {
           setMessages(res.data.messages);
         }
-      } catch (e: any) {
-        // ignore silently (e.g., not purchased yet)
+      } catch {
+        // ignore
       }
     };
     load();
   }, [courseId, chapterId]);
 
-  const send = async () => {
-    const trimmed = input.trim();
+  const enqueueUserQuestion = async (question: string) => {
+    const trimmed = (question ?? "").trim();
     if (!trimmed || loading) return;
 
     setInput("");
@@ -67,7 +96,13 @@ export function AiChat({
 
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: res.data.reply },
+        {
+          role: "assistant",
+          content: res.data.reply,
+          suggestions: Array.isArray(res.data.suggestions)
+            ? res.data.suggestions
+            : undefined,
+        },
       ]);
     } catch (e: any) {
       setMessages((prev) => [
@@ -84,6 +119,55 @@ export function AiChat({
     }
   };
 
+  const send = async () => enqueueUserQuestion(input);
+
+  const renderSuggestions = (s?: ChatMessage["suggestions"]) => {
+    const list = (s && s.length ? s : undefined) ?? [
+      {
+        label: "Overview",
+        question: `Give me a short overview of “${chapterTitle}”.`,
+      },
+      {
+        label: "Key concept",
+        question: `Explain the most important concept in “${chapterTitle}” in simple terms.`,
+      },
+      {
+        label: "Example",
+        question: `Give me a practical example from “${chapterTitle}”.`,
+      },
+    ];
+
+    return (
+      <div className="mt-2">
+        <div className="text-xs text-muted-foreground">
+          What you want to know next?
+        </div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {list.map((x, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => enqueueUserQuestion(x.question)}
+              disabled={loading}
+              className="text-left"
+            >
+              <Badge variant="outline" className="cursor-pointer select-none">
+                {x.label}
+              </Badge>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  // show suggestions only under the latest assistant message
+  const lastAssistantIndex = React.useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.role === "assistant") return i;
+    }
+    return -1;
+  }, [messages]);
 
   return (
     <Card className="mt-6 p-4">
@@ -100,22 +184,35 @@ export function AiChat({
         ref={listRef}
         className="mt-4 h-72 overflow-y-auto rounded-md border bg-white/40 p-3 space-y-3"
       >
-        {messages.map((m, idx) => (
-          <div
-            key={idx}
-            className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
-          >
+        {messages.map((m, idx) => {
+          const showSuggestions =
+            m.role === "assistant" && idx === lastAssistantIndex;
+
+          return (
             <div
-              className={`max-w-[85%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
-                m.role === "user"
-                  ? "bg-sky-600 text-white"
-                  : "bg-slate-100 text-slate-900"
-              }`}
+              key={idx}
+              className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
             >
-              {m.content}
+              <div
+                className={`max-w-[85%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
+                  m.role === "user"
+                    ? "bg-sky-600 text-white"
+                    : "bg-slate-100 text-slate-900"
+                }`}
+              >
+                {m.role === "assistant" ? (
+                  <div>
+                    <MiniMarkdown content={m.content} />
+                    {showSuggestions ? renderSuggestions(m.suggestions) : null}
+                  </div>
+                ) : (
+                  <div className="whitespace-pre-wrap">{m.content}</div>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
+
         {loading && (
           <div className="flex justify-start">
             <div className="max-w-[85%] rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-700">
