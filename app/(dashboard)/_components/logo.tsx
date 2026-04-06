@@ -1,7 +1,21 @@
 import Image from "next/image";
+import Link from "next/link";
 
-export const Logo = () => {
+type LogoProps = {
+  href?: string;
+};
+
+export const Logo = ({ href = "/" }: LogoProps) => {
   return (
-    <Image height={130} width={130} src="/logo.svg" alt="Mentorsed Logo" />
+    <Link href={href} className="flex items-center">
+      <Image
+        src="/logo.svg"
+        alt="MentorsED Logo"
+        width={120}
+        height={30}
+        className="h-7 w-auto"
+        priority
+      />
+    </Link>
   );
 };
